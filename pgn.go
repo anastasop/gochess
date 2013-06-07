@@ -59,7 +59,9 @@ type Game struct {
 	// Moves is initialized after calling ParseMovesText. It contains
 	// all the variations of the game as a tree of plies
 	Moves Variation
-	// MovesText contains game moves as text, copied verbatim from the PGN
+	// PGNText is a verbatim copy of the game PGN
+	PGNText []byte
+	// MovesText contains just the game moves section from the PGN
 	MovesText []byte
 }
 
@@ -148,7 +150,7 @@ func matchTagLine(line []byte) [][]byte {
 func (p *Parser) NextGame() (*Game, error) {
 	var line []byte
 	var err error
-	var moves []byte
+	var pgnText []byte
 
 	tags := make(map[string]string)
 	for {
@@ -160,14 +162,18 @@ func (p *Parser) NextGame() (*Game, error) {
 		}
 		if matches := matchTagLine(line); matches != nil {
 			tags[string(matches[1])] = string(matches[2])
+			pgnText = append(pgnText, line...)
 		} else {
 			break
 		}
 	}
+	pgnTagsEndAt := len(pgnText)
 
 	if tline := bytes.TrimSpace(line); len(tline) > 0 {
-		moves = append(moves, line...)
+		pgnText = append(pgnText, line...)
 		fmt.Fprintf(os.Stderr, "Expected an empty line between tags and moves but got '%q'\n", line)
+	} else {
+		pgnText = append(pgnText, []byte("\n")...)
 	}
 
 	for {
@@ -178,7 +184,7 @@ func (p *Parser) NextGame() (*Game, error) {
 			return nil, err
 		}
 		if matches := matchTagLine(line); matches == nil {
-			moves = append(moves, line...)
+			pgnText = append(pgnText, line...)
 		} else {
 			p.unreadline(line)
 			break
@@ -189,7 +195,8 @@ func (p *Parser) NextGame() (*Game, error) {
 	if len(tags) > 0 {
 		game = &Game{
 			Tags:      tags,
-			MovesText: moves,
+			PGNText: pgnText,
+			MovesText: pgnText[pgnTagsEndAt:],
 		}
 	}
 	return game, nil

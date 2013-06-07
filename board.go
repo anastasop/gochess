@@ -18,15 +18,37 @@ const (
 	pQUEEN  = 5
 	pKING   = 6
 
-	fINITIAL = "rnbqkbnr/pppppppp/////PPPPPPPP/RNBQKBNR"
+	fINITIAL = "rnbqkbnr/pppppppp/////PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+	sSQUARES =
+		"a1a2a3a4a5a6a7a8" +
+		"b1b2b3b4b5b6b7b8" +
+		"c1c2c3c4c5c6c7c8" +
+		"d1d2d3d4d5d6d7d8" +
+		"e1e2e3e4e5e6e7e8" +
+		"f1f2f3f4f5f6f7f8" +
+		"g1g2g3g4g5g6g7g8" +
+		"h1h2h3h4h5h6h7h8"
 )
 
 var (
 	dKNIGHT   [8]int8        = [8]int8{21, 12, 8, 19, -21, -12, -8, -19}
+	dKING   [8]int8        = [8]int8{9, 11, -9, -11, 1, 10, -1, -10}
 	dDIAGONAL [4]int8        = [4]int8{9, 11, -9, -11}
-	dLINES    [4]int8        = [4]int8{1, 10, -1, -10}
+	dSTRAIGHT    [4]int8        = [4]int8{1, 10, -1, -10}
 	rSANRE    *regexp.Regexp = regexp.MustCompile("^(P?|[RNBQK])([a-h]?[1-8]?)?x?([a-h][1-8])(=[PRNBQK])?")
 )
+
+func sq2string(s int8) string {
+	b := make([]byte, 2)
+	b[0] = byte('a' - 1 + s % 10)
+	b[1] = byte('1' + ((s / 10) - 2))
+	return string(b)
+}
+
+func string2sq(sq string) int8 {
+	return int8(21 + (sq[1]-'1')*10 + sq[0] - 'a')
+}
 
 type color uint8
 
@@ -36,12 +58,15 @@ type piece uint8
 // It provides methods to move pieces and export board positions
 // as FEN and GBR
 type Board struct {
-	sq   [120]piece
-	play [8][]piece
-	epsq int8
-	wksq int8
-	bksq int8
-	next_move_white bool
+	sq              [120]piece
+	play            [8][]piece
+	epsq            int8
+	wksq            int8
+	bksq            int8
+	activeMove color
+	lastSAN string
+	MoveWhite bool
+	MoveNumber uint8
 }
 
 func colorOf(b bool) color {
@@ -56,6 +81,13 @@ func (c color) opposite() color {
 		return cBLACK
 	}
 	return cWHITE
+}
+
+func (c color) String() string {
+	if c == cWHITE {
+		return "w"
+	}
+	return "b"
 }
 
 func newPiece(col color, typ uint8, moved bool) piece {
@@ -88,13 +120,27 @@ func (p piece) String() string {
 }
 
 // NewBoardFromFen returns a Board object initialized with the position of fen
-func NewBoardFromFen(fen string) *Board {
-	b := &Board{next_move_white: true}
+func NewBoardFromFen(fen string) (*Board, error) {
+	parts := strings.Fields(fen)
+	if parts == nil || len(parts) == 0 {
+		return nil, fmt.Errorf("fen is wrong")
+	}
+	b := new(Board)
+
+	b.activeMove = colorOf(parts[1] == "w")
+//	if parts[3] != "-" {
+//		b.epsq = string2sq(parts[3])
+//	}
+	// TODO castling
+	if n, err := strconv.Atoi(parts[5]); err == nil {
+		b.MoveNumber = uint8(n)
+	}
+
 	for i, _ := range b.sq {
 		b.sq[i] = 0xff
 	}
-	fen = strings.TrimSpace(fen)
-	ranks := strings.Split(fen+"/////////", "/")[:8]
+	repr := strings.TrimSpace(parts[0])
+	ranks := strings.Split(repr+"/////////", "/")[:8]
 	repl := strings.NewReplacer(
 		"1", "*", "2", "**", "3", "***", "4", "****", "5", "*****",
 		"6", "******", "7", "*******", "8", "********")
@@ -142,92 +188,79 @@ func NewBoardFromFen(fen string) *Board {
 	b.play[5] = b.sq[41:49]
 	b.play[6] = b.sq[31:39]
 	b.play[7] = b.sq[21:29]
-	return b
+	return b, nil
 }
 
 // NewBoard returns a Board object initialized with the standard starting position
 func NewBoard() *Board {
-	return NewBoardFromFen(fINITIAL)
+	b, _ := NewBoardFromFen(fINITIAL)
+	return b
 }
 
-func sq2string(s int8) string {
-	b := make([]byte, 2)
-	b[0] = byte('a' - 1 + s%10)
-	b[1] = byte('1' + ((s / 10) - 2))
-	return string(b)
-}
-
-func (b *Board) attackers(sq int8, col color, includePawnMoves bool) []int8 {
+func (b *Board) attackersOf(sq int8, col color) []int8 {
 	s := make([]int8, 0)
-
 	for _, d := range dKNIGHT {
-		to := sq + d
-		piece := b.sq[to]
+		from := sq + d
+		piece := b.sq[from]
 		if c, t := piece.identify(); c == col && t == pKNIGHT {
-			s = append(s, to)
+			s = append(s, from)
+		}
+	}
+	for _, d := range dKING {
+		from := sq + d
+		piece := b.sq[from]
+		if c, t := piece.identify(); c == col && t == pKING {
+			s = append(s, from)
 		}
 	}
 	for _, d := range dDIAGONAL {
-		for to := sq + d; b.sq[to] != 0xff; to += d {
-			if piece := b.sq[to]; piece != 0 {
+		for from := sq + d; b.sq[from] != 0xff; from += d {
+			if piece := b.sq[from]; piece != 0 {
 				if c, t := piece.identify(); c == col && (t == pQUEEN || t == pBISHOP) {
-					s = append(s, to)
+					s = append(s, from)
 				}
 				break
 			}
 		}
 	}
-	for _, d := range dDIAGONAL {
-		to := sq + d
-		if piece := b.sq[to]; piece != 0 {
-			if c, t := piece.identify(); c == col && t == pKING {
-				s = append(s, to)
-			}
-		}
-	}
-	for _, d := range dLINES {
-		for to := sq + d; b.sq[to] != 0xff; to += d {
-			if piece := b.sq[to]; piece != 0 {
+	for _, d := range dSTRAIGHT {
+		for from := sq + d; b.sq[from] != 0xff; from += d {
+			if piece := b.sq[from]; piece != 0 {
 				if c, t := piece.identify(); c == col && (t == pQUEEN || t == pROOK) {
-					s = append(s, to)
+					s = append(s, from)
 				}
 				break
 			}
 		}
 	}
-	for _, d := range dLINES {
-		to := sq + d
-		if piece := b.sq[to]; piece != 0 {
-			if c, t := piece.identify(); c == col && t == pKING {
-				s = append(s, to)
-			}
+	pawnCaptures := dDIAGONAL[2:]
+	if col == cBLACK {
+		pawnCaptures = dDIAGONAL[0:2]
+	}
+	for _, d := range pawnCaptures {
+		from := sq + d
+		piece := b.sq[from]
+		if c, t := piece.identify(); c == col && t == pPAWN {
+			s = append(s, from)
 		}
 	}
+	return s
+}
 
-	direction := int8(1)
-	if col == cWHITE {
-		direction = int8(-1)
+func (b *Board) piecesMovableTo(sq int8, col color) []int8 {
+	s := b.attackersOf(sq, col)
+	direction := int8(-1)
+	if col == cBLACK {
+		direction = int8(1)
 	}
-	if to := sq + direction*11; b.sq[to] != 0xff {
-		if c, t := b.sq[to].identify(); c == col && t == pPAWN {
-			s = append(s, to)
-		}
-	}
-	if to := sq + direction*9; b.sq[to] != 0xff {
-		if c, t := b.sq[to].identify(); c == col && t == pPAWN {
-			s = append(s, to)
-		}
-	}
-	if includePawnMoves {
-		if to := sq + direction*10; b.sq[to] != 0xff {
-			if b.sq[to] == 0 {
-				to += direction * 10
-				if c, t := b.sq[to].identify(); c == col && t == pPAWN && !b.sq[to].hasMoved() {
-					s = append(s, to)
-				}
-			} else if c, t := b.sq[to].identify(); c == col && t == pPAWN {
-				s = append(s, to)
+	if from := sq + direction*10; b.sq[from] != 0xff {
+		if b.sq[from] == 0 {
+			from += direction * 10
+			if c, t := b.sq[from].identify(); c == col && t == pPAWN && !b.sq[from].hasMoved() {
+				s = append(s, from)
 			}
+		} else if c, t := b.sq[from].identify(); c == col && t == pPAWN {
+			s = append(s, from)
 		}
 	}
 	return s
@@ -239,22 +272,43 @@ func (b *Board) attackers(sq int8, col color, includePawnMoves bool) []int8 {
 // does not record the move. The board keeps track of which color moved previously and
 // alternates
 func (b *Board) MakeMove(san string) error {
-	err := b.makeMoveFor(san, b.next_move_white)
-	b.next_move_white = !b.next_move_white
+	err := b.makeMoveFor(san, b.activeMove)
+	if err == nil {
+		if b.activeMove == cBLACK {
+			b.MoveNumber++
+		}
+		b.activeMove = b.activeMove.opposite()
+		b.MoveWhite = !b.MoveWhite
+		b.lastSAN = san
+	}
 	return err
+}
+
+// LastMove returns the last move made on the board.
+// In other words the position on the board resulted after this move
+func (b *Board) LastMove() (san string, white bool, number uint8) {
+	san = b.lastSAN
+	white = b.activeMove == cBLACK;
+	if white {
+		number = b.MoveNumber
+	} else {
+		number = b.MoveNumber - 1
+	}
+	return
 }
 
 // SetTurn sets who makes the next move
 func (b *Board) SetTurn(whiteMove bool) {
-	b.next_move_white = whiteMove
+	b.activeMove = colorOf(whiteMove)
+	b.MoveWhite = whiteMove
 }
 
-func (b *Board) makeMoveFor(san string, whiteMove bool) error {
+func (b *Board) makeMoveFor(san string, activeMove color) error {
 	if san == "--" {
 		return nil
 	}
 	if strings.HasPrefix(san, "O-O-O") {
-		if whiteMove {
+		if activeMove == cWHITE {
 			b.sq[21], b.sq[22], b.sq[23], b.sq[24], b.sq[25] = 0, 0, newPiece(cWHITE, pKING, true), newPiece(cWHITE, pROOK, true), 0
 			b.wksq = 23
 		} else {
@@ -265,7 +319,7 @@ func (b *Board) makeMoveFor(san string, whiteMove bool) error {
 		return nil
 	}
 	if strings.HasPrefix(san, "O-O") {
-		if whiteMove {
+		if activeMove == cWHITE {
 			b.sq[25], b.sq[26], b.sq[27], b.sq[28] = 0, newPiece(cWHITE, pROOK, true), newPiece(cWHITE, pKING, true), 0
 			b.wksq = 27
 		} else {
@@ -288,33 +342,37 @@ func (b *Board) makeMoveFor(san string, whiteMove bool) error {
 		}
 	}
 	pieceTyp := uint8(strings.Index("PNBRQK", piece) + 1)
-	tosq := int8(21 + (dsq[1]-'1')*10 + dsq[0] - 'a')
+	tosq := string2sq(dsq)
 
-	attackers := b.attackers(tosq, colorOf(whiteMove), true)
-	if attackers == nil {
-		return fmt.Errorf("no attackers: SAN %s", san)
+	candidates := b.piecesMovableTo(tosq, activeMove)
+	if candidates == nil {
+		return fmt.Errorf("no candidates to move for: SAN %s", san)
 	}
 
-	candidates := make([]int8, 0)
-	for _, attacker := range attackers {
-		if _, typ := b.sq[attacker].identify(); typ == pieceTyp {
-			if fromHint == "" || strings.Index(sq2string(attacker), fromHint) >= 0 {
-				if b.tryMove(true, whiteMove, attacker, tosq, promotes) == nil {
-					candidates = append(candidates, attacker)
+	qualified := make([]int8, 0)
+	for _, candidate := range candidates {
+		if _, typ := b.sq[candidate].identify(); typ == pieceTyp {
+			if fromHint == "" || strings.Index(sq2string(candidate), fromHint) >= 0 {
+				if b.tryMove(true, activeMove, candidate, tosq, promotes) == nil {
+					qualified = append(qualified, candidate)
 				}
 			}
 		}
 	}
-	if len(candidates) != 1 {
-		return fmt.Errorf("there are %d candidate moves for %s", len(candidates), san)
+	if len(qualified) != 1 {
+		fmt.Println("There were ", len(candidates), " ", candidates)
+		for _, sq := range candidates {
+			fmt.Println("\t", sq2string(sq))
+		}
+		return fmt.Errorf("there are %d candidate moves for %d %s", len(qualified), b.MoveNumber, san)
 	}
-	return b.tryMove(false, whiteMove, candidates[0], tosq, promotes)
+	return b.tryMove(false, activeMove, qualified[0], tosq, promotes)
 }
 
-func (b *Board) tryMove(try bool, whiteMove bool, csq, tosq int8, promotes string) error {
-	colorMove, step := color(cBLACK), int8(-10)
-	if whiteMove {
-		colorMove, step = color(cWHITE), int8(10)
+func (b *Board) tryMove(try bool, activeMove color, csq, tosq int8, promotes string) error {
+	step := int8(-10)
+	if activeMove == cWHITE {
+		step = int8(10)
 	}
 
 	// TODO rollback ep moves
@@ -339,7 +397,7 @@ func (b *Board) tryMove(try bool, whiteMove bool, csq, tosq int8, promotes strin
 			b.epsq = 0
 		}
 		if promotes != "" {
-			cPiece = newPiece(colorMove, uint8(strings.Index("PNBRQK", promotes[1:2])+1), true)
+			cPiece = newPiece(activeMove, uint8(strings.Index("PNBRQK", promotes[1:2])+1), true)
 		}
 		b.sq[tosq] = cPiece.markedMoved()
 	} else {
@@ -356,10 +414,10 @@ func (b *Board) tryMove(try bool, whiteMove bool, csq, tosq int8, promotes strin
 	b.sq[csq] = 0
 
 	ksq := b.bksq
-	if whiteMove {
+	if activeMove == cWHITE {
 		ksq = b.wksq
 	}
-	attackers := b.attackers(ksq, colorMove.opposite(), false)
+	attackers := b.attackersOf(ksq, activeMove.opposite())
 	if len(attackers) != 0 {
 		return fmt.Errorf("invalid move. King at %v is attacked by %v", sq2string(ksq), sq2string(attackers[0]))
 	}
@@ -368,27 +426,71 @@ func (b *Board) tryMove(try bool, whiteMove bool, csq, tosq int8, promotes strin
 
 // Fen returns the board position as a standard FEN string see http://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation
 func (b *Board) Fen() string {
-	s := ""
-	for _, rank := range b.play {
+	fen := ""
+
+	// piece placement
+	for r, rank := range b.play {
 		nempty := 0
 		for _, piece := range rank {
 			if t := piece.String(); t == "_" {
 				nempty++
 			} else {
 				if nempty > 0 {
-					s += strconv.Itoa(nempty)
+					fen += strconv.Itoa(nempty)
 				}
 				nempty = 0
-				s += t
+				fen += t
 			}
 		}
 		if nempty > 0 {
-			s += strconv.Itoa(nempty)
+			fen += strconv.Itoa(nempty)
 		}
 		nempty = 0
-		s += "/"
+		if r != 7 {
+			fen += "/"
+		}
 	}
-	return s
+
+	// active color
+	fen += " " + b.activeMove.String()
+
+	// castling availability
+	av := " "
+	if !b.sq[b.wksq].hasMoved() {
+		if !b.sq[21].hasMoved() {
+			av += "Q"
+		}
+		if !b.sq[28].hasMoved() {
+			av += "K"
+		}
+	}
+	if !b.sq[b.bksq].hasMoved() {
+		if !b.sq[91].hasMoved() {
+			av += "q"
+		}
+		if !b.sq[98].hasMoved() {
+			av += "k"
+		}
+	}
+	if av == " " {
+		av = " -"
+	}
+	fen += av
+	
+	// en passant target
+	if b.epsq == 0 {
+		fen += " -"
+	} else {
+		fen += "  " + sq2string(b.epsq)
+	}
+
+	// halfmoves TODO
+	fen += " 0"
+
+	// full moves
+	fen += " " + strconv.Itoa(int(b.MoveNumber))
+
+	return fen
 }
 
 func min(a, b int) int {
@@ -398,7 +500,7 @@ func min(a, b int) int {
 	return b
 }
 
-// Fen returns the GBR code for the position see http://en.wikipedia.org/wiki/GBR_code
+// Gbr returns the GBR code for the position see http://en.wikipedia.org/wiki/GBR_code
 func (b *Board) Gbr() string {
 	var white, black [7]int
 	for _, rank := range b.play {
@@ -419,14 +521,29 @@ func (b *Board) Gbr() string {
 		min(black[pPAWN], 9))
 }
 
-// String returns a string representation of the board better suited for debugging
+// String is equivalent to Fen()
 func (b *Board) String() string {
-	s := ""
-	for _, rank := range b.play {
-		for _, piece := range rank {
-			s += piece.String()
-		}
-		s += "/"
-	}
-	return s
+	return b.Fen()
 }
+
+/*
+func (b *Board) Img(mapping map[string]image.Image) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
+	tmpl := "wbpnbrqk"
+	for r, rank := range b.play {
+		for f, piece := range rank {
+			sqColor := (f + (r % 2)) % 2
+			var imgKey string
+			if piece == 0 {
+				imgKey = tmpl[sqColor: sqColor + 1] 
+			} else {
+				c, t := piece.identify()
+				imgKey = tmpl[c: c + 1] + tmpl[1 + t: 2 + t] + tmpl[sqColor: sqColor + 1]
+			}
+			p := image.Pt(f * 32, r * 32)
+			draw.Draw(img, image.Rect(p.X, p.Y, p.X + 32, p.Y + 32), mapping[imgKey], image.ZP, draw.Src)
+		}
+	}
+	return img
+}
+*/
