@@ -360,10 +360,10 @@ func (b *Board) makeMoveFor(san string, activeMove color) error {
 		}
 	}
 	if len(qualified) != 1 {
-		fmt.Println("There were ", len(candidates), " ", candidates)
-		for _, sq := range candidates {
-			fmt.Println("\t", sq2string(sq))
-		}
+//		fmt.Println("There were ", len(candidates), " ", candidates)
+//		for _, sq := range candidates {
+//			fmt.Println("\t", sq2string(sq))
+//		}
 		return fmt.Errorf("there are %d candidate moves for %d %s", len(qualified), b.MoveNumber, san)
 	}
 	return b.tryMove(false, activeMove, qualified[0], tosq, promotes)

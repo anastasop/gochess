@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -171,7 +170,7 @@ func (p *Parser) NextGame() (*Game, error) {
 
 	if tline := bytes.TrimSpace(line); len(tline) > 0 {
 		pgnText = append(pgnText, line...)
-		fmt.Fprintf(os.Stderr, "Expected an empty line between tags and moves but got '%q'\n", line)
+//		fmt.Fprintf(os.Stderr, "Expected an empty line between tags and moves but got '%q'\n", line)
 	} else {
 		pgnText = append(pgnText, []byte("\n")...)
 	}
