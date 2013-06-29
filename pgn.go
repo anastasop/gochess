@@ -7,7 +7,6 @@ import (
 	"io"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 type pgnToken int
@@ -33,7 +32,7 @@ const (
 )
 
 const (
-	pgnSAN_REGEXP = "^(((O-O|O-O-O)|((P?|[RNBQK])[a-h]?[1-8]?x?[a-h][1-8](=[PRNBQK])?))(\\+|#)?(!|\\?|!!|\\?\\?|\\?!|!\\?)?)$"
+	pgnSAN_REGEXP = "^(((O-O|O-O-O)|((P?|[RNBQK])[a-h]?[1-8]?x?[a-h][1-8](=[PRNBQK])?))(\\+|#)?)$"
 	pgnTAG_REGEXP = `^\[?\s*([A-Za-z0-9_]+)\s+"(.*)"\s*\]`
 )
 
@@ -43,6 +42,15 @@ var (
 	whiteWins []byte         = []byte("1-0")
 	blackWins []byte         = []byte("0-1")
 	drawRes   []byte         = []byte("1/2-1/2")
+
+	specialAnnotations [][]byte = [][]byte{
+		[]byte("??"),
+		[]byte("!!"),
+		[]byte("!?"),
+		[]byte("?!"),
+		[]byte("?"),
+		[]byte("!"),
+	}
 )
 
 // Parser is a parser for the PGN chess games notation
@@ -251,6 +259,16 @@ func (t *tokenizer) next() token {
 		return token{pgnSTRING, tok}
 	}
 
+	// special handling for these six annotations
+	// they can appear only in the import format
+	// in export format they are always nags
+	for _, s := range specialAnnotations {
+		if bytes.HasPrefix(t.text, s) {
+			t.text = t.text[len(s):]
+			return token{pgnTOKEN, string(s)}
+		}
+	}
+
 	if bytes.HasPrefix(t.text, whiteWins) {
 		t.text = t.text[len(whiteWins):]
 		return token{pgnRESULT, "1-0"}
@@ -329,7 +347,7 @@ func (t *tokenizer) next() token {
 			break
 		}
 	}
-	tok := string(t.text[0:pos])
+	tok := string(t.text[0: pos])
 	t.text = t.text[pos:]
 	if isSymbol {
 		return token{pgnSYMBOL, tok}
@@ -337,6 +355,10 @@ func (t *tokenizer) next() token {
 		return token{pgnIDENTIFIER, tok}
 	} else if isInteger {
 		return token{pgnINTEGER, tok}
+	}
+	if tok == "" {
+		// quick and ugly hack to get error reporting right
+		tok = string(t.text[0: len(t.text)])
 	}
 	return token{pgnTOKEN, tok}
 }
@@ -417,25 +439,6 @@ func (t *tokenizer) generatePlies(variation *Variation, inRav bool, thisMoveNumb
 					return fmt.Errorf("mismatched SAN '%s'", token.val)
 				}
 				SAN = token.val
-				if strings.HasSuffix(SAN, "!!") {
-					SAN = SAN[:len(SAN)-2]
-					ply.Nags = append(ply.Nags, 3)
-				} else if strings.HasSuffix(SAN, "??") {
-					SAN = SAN[:len(SAN)-2]
-					ply.Nags = append(ply.Nags, 4)
-				} else if strings.HasSuffix(SAN, "!?") {
-					SAN = SAN[:len(SAN)-2]
-					ply.Nags = append(ply.Nags, 5)
-				} else if strings.HasSuffix(SAN, "?!") {
-					SAN = SAN[:len(SAN)-2]
-					ply.Nags = append(ply.Nags, 6)
-				} else if strings.HasSuffix(SAN, "!") {
-					SAN = SAN[:len(SAN)-1]
-					ply.Nags = append(ply.Nags, 1)
-				} else if strings.HasSuffix(SAN, "?") {
-					SAN = SAN[:len(SAN)-1]
-					ply.Nags = append(ply.Nags, 2)
-				}
 			}
 			ply = &Ply{SAN: SAN}
 			variation.Plies = append(variation.Plies, ply)
@@ -467,7 +470,34 @@ func (t *tokenizer) generatePlies(variation *Variation, inRav bool, thisMoveNumb
 			}
 
 		default:
-			return fmt.Errorf("unexpected token '%d:%s'", token.typ, token.val)
+			switch token.val {
+			case "!":
+				if ply != nil {
+					ply.Nags = append(ply.Nags, 1)
+				}
+			case "?":
+				if ply != nil {
+					ply.Nags = append(ply.Nags, 2)
+				}
+			case "!!":
+				if ply != nil {
+					ply.Nags = append(ply.Nags, 3)
+				}
+			case "??":
+				if ply != nil {
+					ply.Nags = append(ply.Nags, 4)
+				}
+			case "!?":
+				if ply != nil {
+					ply.Nags = append(ply.Nags, 5)
+				}
+			case "?!":
+				if ply != nil {
+					ply.Nags = append(ply.Nags, 6)
+				}
+			default:
+				return fmt.Errorf("unexpected token '%s'", token.val)
+			}
 		}
 	}
 	return nil
